@@ -572,8 +572,7 @@ const App = () => {
   const [history, setHistory] = React.useState<AnalysisResult[]>([]);
   const [errorDetails, setErrorDetails] = React.useState<string | null>(null);
 
-  const CONTRACT_ADDR = import.meta.env.VITE_CONTRACT_ADDRESS || import.meta.env.VITE_CONTRACT_ADDRES;
-
+  const CONTRACT_ADDR = import.meta.env.VITE_CONTRACT_ADDRESS;
   // Load history on mount
   React.useEffect(() => {
     const loadHistory = async () => {

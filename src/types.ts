@@ -1,11 +1,11 @@
 export interface ValidatorOpinion {
   name: string;
-  opinion: 'High Risk' | 'Moderate Risk' | 'Low Risk' | 'Safe';
+  opinion: string; // relaxed from union — LLM returns dynamic values
   detail: string;
 }
 
 export interface TweetVariant {
-  type: 'Safe' | 'Balanced' | 'Spicy' | 'Nuclear';
+  type: string; // relaxed from union — LLM returns dynamic values
   description: string;
   tweet: string;
 }
