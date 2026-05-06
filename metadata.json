@@ -1,0 +1,6 @@
+{
+  "name": "TweetJudge",
+  "description": "AI-powered tweet analysis using GenLayer-style multi-validator consensus to predict virality and backlash.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
