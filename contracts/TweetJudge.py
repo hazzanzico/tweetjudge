@@ -10,10 +10,19 @@ class TweetJudge(gl.Contract):
         pass
 
     @gl.public.write
-    def analyze_tweet(self, tweet: str) -> str:
+    def analyze_tweet(self, tweet: str, user_address: str = "") -> str:
         prompt = f"""
 Analyze this tweet and return JSON:
 "{tweet}"
+
+RULES for improved_tweet and all variant tweets:
+- Preserve the original length. If the original is long, the rewrite must also be long. If short, keep it short. Do NOT summarize, condense, or cut out any points, steps, or details.
+- Keep the exact same tone, voice, and writing style as the original. It must feel like the same person wrote it.
+- Do NOT add hashtags unless they already appear in the original.
+- Do NOT add emojis unless they already appear in the original.
+- Do NOT use em-dashes (— or -) unless they already appear in the original.
+- Do NOT add symbols, formatting, or punctuation not present in the original.
+- Only improve clarity, word choice, and flow. Nothing else.
 
 Format:
 {{
@@ -51,11 +60,12 @@ Format:
             .strip()
         )
 
-        sender = gl.message.sender_address
+        # Use provided user_address if given (for sponsored transactions), otherwise use sender
+        target_user = Address(user_address) if user_address else gl.message.sender_address
 
         existing = "[]"
-        if sender in self.user_histories:
-            existing = self.user_histories[sender]
+        if target_user in self.user_histories:
+            existing = self.user_histories[target_user]
 
         history = json.loads(existing)
         history.append({
@@ -65,7 +75,7 @@ Format:
         })
 
         updated = json.dumps(history)
-        self.user_histories[sender] = updated
+        self.user_histories[target_user] = updated
         return updated
 
     @gl.public.view

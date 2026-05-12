@@ -1,13 +1,6 @@
-import { createClient, createAccount } from "genlayer-js";
+import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
 
-const testnetBradbury = {
-  id: 4221,
-  name: "GenLayer Testnet Bradbury",
-  rpcUrls: {
-    default: { http: ["https://rpc-bradbury.genlayer.com"] },
-  },
-  nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 },
-};
+import { testnetBradbury } from "genlayer-js/chains";
 
 export type AnalysisResult = {
   id: string;
@@ -36,23 +29,27 @@ export const client = createClient({
 
 const getPersistentAccount = () => {
   const stored = localStorage.getItem("tweetjudge_account_pk");
-  if (stored) {
+  if (stored && stored.length > 0) {
     try {
-      return createAccount(stored as any);
+      return createAccount(stored as `0x${string}`);
     } catch (e) {
-      console.error("Failed to load stored account", e);
+      console.error("Failed to load stored account, generating new one:", e);
+      localStorage.removeItem("tweetjudge_account_pk");
     }
   }
-  const newAcc = createAccount();
-  localStorage.setItem(
-    "tweetjudge_account_pk",
-    (newAcc as any).privateKey || ""
-  );
-  return newAcc;
+  const pk = generatePrivateKey();
+  localStorage.setItem("tweetjudge_account_pk", pk);
+  return createAccount(pk);
 };
 
 const account = getPersistentAccount();
 const USER_ADDRESS = account.address;
+
+export function getUserAddress(): string {
+  return USER_ADDRESS;
+}
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
 
 export async function analyzeTweetWithConsensus(
   tweet: string
@@ -62,43 +59,71 @@ export async function analyzeTweetWithConsensus(
   }
 
   try {
-    // 1. Send transaction
-    const hash = await client.writeContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "analyze_tweet",
-      args: [tweet],
-      account,
-      value: 0n,
-    });
-
-    console.log("Transaction hash:", hash);
-
-    // 2. Wait for acceptance
-    await client.waitForTransactionReceipt({
-      hash,
-      status: "ACCEPTED" as any,
-      retries: 300,
-      interval: 4000,
-    });
-
-    // 3. Fetch result with retry
-    let count = 0;
-    for (let i = 0; i < 10; i++) {
+    // Snapshot the current history count BEFORE submitting the new transaction.
+    // This is the key fix: we need to wait for count to EXCEED this baseline,
+    // not just be greater than 0 (which would return old results immediately).
+    let countBefore = 0;
+    try {
       const rawCount = await client.readContract({
         address: CONTRACT_ADDRESS,
         functionName: "get_history_count",
         args: [USER_ADDRESS],
       });
-      count = rawCount != null ? Number(rawCount) : 0;
-      if (count > 0) break;
+      countBefore = rawCount != null ? Number(rawCount) : 0;
+    } catch (e) {
+      console.warn("Could not read initial history count, assuming 0:", e);
+      countBefore = 0;
+    }
+
+    console.log("History count before submission:", countBefore);
+
+    // Call backend to submit sponsored transaction
+    console.log("Submitting to backend:", API_URL);
+    const submitResponse = await fetch(`${API_URL}/api/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tweet, userAddress: USER_ADDRESS }),
+    });
+
+    if (!submitResponse.ok) {
+      const error = await submitResponse.json();
+      throw new Error(error.error || `Backend error: ${submitResponse.status}`);
+    }
+
+    const { hash } = await submitResponse.json();
+    console.log("Transaction hash:", hash);
+
+    // Poll until the count is strictly greater than what it was before we submitted.
+    // This guarantees we're reading the NEW result, not a previous one.
+    let newCount = countBefore;
+    let attempts = 0;
+    const maxAttempts = 30; // 60 seconds max (30 * 2s)
+
+    while (attempts < maxAttempts) {
       await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const rawCount = await client.readContract({
+          address: CONTRACT_ADDRESS,
+          functionName: "get_history_count",
+          args: [USER_ADDRESS],
+        });
+        newCount = rawCount != null ? Number(rawCount) : countBefore;
+        console.log(`Attempt ${attempts + 1}: count = ${newCount} (need > ${countBefore})`);
+        if (newCount > countBefore) break;
+      } catch (e) {
+        console.warn(`Attempt ${attempts + 1}: Failed to read history count`, e);
+      }
+      attempts++;
     }
 
-    if (count === 0) {
-      throw new Error("Analysis completed but result not found yet.");
+    if (newCount <= countBefore) {
+      throw new Error(
+        "Analysis timed out - new result not found after 60 seconds. Transaction may still be processing."
+      );
     }
 
-    const lastIndex = count - 1;
+    // The new result is always at the last index (newCount - 1)
+    const lastIndex = newCount - 1;
 
     const jsonResult = await client.readContract({
       address: CONTRACT_ADDRESS,
