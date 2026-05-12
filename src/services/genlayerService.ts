@@ -1,5 +1,5 @@
 import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
-
+import { TransactionStatus } from "genlayer-js/types";
 import { testnetBradbury } from "genlayer-js/chains";
 
 export type AnalysisResult = {
@@ -59,24 +59,6 @@ export async function analyzeTweetWithConsensus(
   }
 
   try {
-    // Snapshot the current history count BEFORE submitting the new transaction.
-    // This is the key fix: we need to wait for count to EXCEED this baseline,
-    // not just be greater than 0 (which would return old results immediately).
-    let countBefore = 0;
-    try {
-      const rawCount = await client.readContract({
-        address: CONTRACT_ADDRESS,
-        functionName: "get_history_count",
-        args: [USER_ADDRESS],
-      });
-      countBefore = rawCount != null ? Number(rawCount) : 0;
-    } catch (e) {
-      console.warn("Could not read initial history count, assuming 0:", e);
-      countBefore = 0;
-    }
-
-    console.log("History count before submission:", countBefore);
-
     // Call backend to submit sponsored transaction
     console.log("Submitting to backend:", API_URL);
     const submitResponse = await fetch(`${API_URL}/api/analyze`, {
@@ -93,37 +75,24 @@ export async function analyzeTweetWithConsensus(
     const { hash } = await submitResponse.json();
     console.log("Transaction hash:", hash);
 
-    // Poll until the count is strictly greater than what it was before we submitted.
-    // This guarantees we're reading the NEW result, not a previous one.
-    let newCount = countBefore;
-    let attempts = 0;
-    const maxAttempts = 100; // 500 seconds max (100 * 5s)
+    // Use the built-in SDK method instead of manual polling
+    const receipt = await client.waitForTransactionReceipt({
+      hash: hash,
+      status: TransactionStatus.ACCEPTED,
+      retries: 100,
+      interval: 5000,
+    });
 
-    while (attempts < maxAttempts) {
-      await new Promise((r) => setTimeout(r, 5000));
-      try {
-        const rawCount = await client.readContract({
-          address: CONTRACT_ADDRESS,
-          functionName: "get_history_count",
-          args: [USER_ADDRESS],
-        });
-        newCount = rawCount != null ? Number(rawCount) : countBefore;
-        console.log(`Attempt ${attempts + 1}: count = ${newCount} (need > ${countBefore})`);
-        if (newCount > countBefore) break;
-      } catch (e) {
-        console.warn(`Attempt ${attempts + 1}: Failed to read history count`, e);
-      }
-      attempts++;
-    }
+    console.log("Transaction receipt:", receipt);
 
-    if (newCount <= countBefore) {
-      throw new Error(
-        "Analysis timed out - new result not found after 8 minutes. Transaction may still be processing."
-      );
-    }
+    // Now read the result directly
+    const newCount = await client.readContract({
+      address: CONTRACT_ADDRESS,
+      functionName: "get_history_count",
+      args: [USER_ADDRESS],
+    });
 
-    // The new result is always at the last index (newCount - 1)
-    const lastIndex = newCount - 1;
+    const lastIndex = Number(newCount) - 1;
 
     const jsonResult = await client.readContract({
       address: CONTRACT_ADDRESS,
