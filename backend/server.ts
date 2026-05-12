@@ -71,8 +71,8 @@ app.get("/api/health", (req, res) => {
   res.json({ status: "ok", sponsor: sponsorAccount.address });
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, "0.0.0.0", () => {
+const PORT = process.env.PORT || 8080;
+app.listen(Number(PORT), "0.0.0.0", () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`Sponsor account: ${sponsorAccount.address}`);
 });
