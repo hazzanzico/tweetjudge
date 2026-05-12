@@ -97,10 +97,10 @@ export async function analyzeTweetWithConsensus(
     // This guarantees we're reading the NEW result, not a previous one.
     let newCount = countBefore;
     let attempts = 0;
-    const maxAttempts = 30; // 60 seconds max (30 * 2s)
+    const maxAttempts = 100; // 500 seconds max (100 * 5s)
 
     while (attempts < maxAttempts) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 5000));
       try {
         const rawCount = await client.readContract({
           address: CONTRACT_ADDRESS,
@@ -118,7 +118,7 @@ export async function analyzeTweetWithConsensus(
 
     if (newCount <= countBefore) {
       throw new Error(
-        "Analysis timed out - new result not found after 60 seconds. Transaction may still be processing."
+        "Analysis timed out - new result not found after 8 minutes. Transaction may still be processing."
       );
     }
 

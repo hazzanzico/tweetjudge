@@ -832,7 +832,7 @@ const App = () => {
               </div>
               <p className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Verifying Equivalence</p>
             </div>
-            <p className="text-gray-500 text-xs mt-12 bg-white/5 px-4 py-2 rounded-full">Bradbury Testnet usually takes 20-40 seconds</p>
+            <p className="text-gray-500 text-xs mt-12 bg-white/5 px-4 py-2 rounded-full">Bradbury Testnet usually takes 2-5 minutes</p>
           </motion.div>
         ) : (
           <main key={currentPage}>
