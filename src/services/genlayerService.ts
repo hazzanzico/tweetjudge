@@ -78,7 +78,7 @@ export async function analyzeTweetWithConsensus(
     // Use the built-in SDK method instead of manual polling
     const receipt = await client.waitForTransactionReceipt({
       hash: hash,
-      status: TransactionStatus.ACCEPTED,
+      status: "ACCEPTED",
       retries: 100,
       interval: 5000,
     });
