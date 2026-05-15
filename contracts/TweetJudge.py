@@ -4,38 +4,58 @@ import json
 
 
 class TweetJudge(gl.Contract):
-    user_histories: TreeMap[Address, str]
+    # Flat storage: key is "address:index" -> single JSON result
+    analysis_data: TreeMap[str, str]
+    # Flat count: key is Address -> count of analyses
+    analysis_count: TreeMap[Address, u256]
 
     def __init__(self):
         pass
 
     @gl.public.write
     def analyze_tweet(self, tweet: str, user_address: str = "") -> str:
-        prompt = f"""
-Analyze this tweet and return JSON:
+
+        # ── Phase 1: Score-only prompt (faster consensus on structured numbers) ──
+        scoring_prompt = f"""
+Analyze this tweet and return ONLY this JSON with no extra text:
 "{tweet}"
 
-RULES for improved_tweet and all variant tweets:
-- Preserve the original length. If the original is long, the rewrite must also be long. If short, keep it short. Do NOT summarize, condense, or cut out any points, steps, or details.
-- Keep the exact same tone, voice, and writing style as the original. It must feel like the same person wrote it.
-- Do NOT add hashtags unless they already appear in the original.
-- Do NOT add emojis unless they already appear in the original.
-- Do NOT use em-dashes (— or -) unless they already appear in the original.
-- Do NOT add symbols, formatting, or punctuation not present in the original.
-- Only improve clarity, word choice, and flow. Nothing else.
-
-Format:
 {{
-  "virality_score": number between 0-100,
-  "backlash_risk": number between 0-100,
-  "consensus_disagreement": number between 0-100,
-  "summary": "string",
+  "virality_score": integer between 0 and 100,
+  "backlash_risk": integer between 0 and 100,
+  "consensus_disagreement": integer between 0 and 100,
+  "summary": "one sentence string",
   "audience_breakdown": {{
-    "agree": "percentage string e.g. 40%",
-    "attack": "percentage string e.g. 35%",
-    "ignore": "percentage string e.g. 25%"
+    "agree": "percentage e.g. 40%",
+    "attack": "percentage e.g. 35%",
+    "ignore": "percentage e.g. 25%"
   }},
-  "reasoning_points": ["point 1", "point 2", "point 3"],
+  "reasoning_points": ["point 1", "point 2", "point 3"]
+}}
+
+Rules:
+- audience_breakdown percentages must sum to exactly 100%.
+- Return valid JSON only. No markdown. No code blocks. No extra text.
+"""
+
+        scores_raw = (
+            gl.eq_principle.prompt_non_comparative(
+                lambda: scoring_prompt,
+                task="Score tweet performance with numeric metrics",
+                criteria="Return valid JSON. virality_score, backlash_risk, and consensus_disagreement must be integers between 0 and 100. audience_breakdown percentages must sum to 100%."
+            )
+            .replace("```json", "")
+            .replace("```", "")
+            .strip()
+        )
+
+        # ── Phase 2: Text generation prompt seeded with agreed scores ──
+        generation_prompt = f"""
+Given this tweet: "{tweet}"
+And these agreed metrics: {scores_raw}
+
+Return ONLY this JSON with no extra text:
+{{
   "validator_opinions": [
     {{"name": "Risk Analyst", "opinion": "string", "detail": "string"}},
     {{"name": "Engagement Expert", "opinion": "string", "detail": "string"}},
@@ -48,57 +68,104 @@ Format:
     {{"type": "viral", "description": "string", "tweet": "string"}}
   ]
 }}
+
+Rules for improved_tweet and all variant tweets:
+- Preserve the original length. If the original is long, the rewrite must also be long. If short, keep it short.
+- Keep the exact same tone, voice, and writing style as the original.
+- Do NOT add hashtags unless they already appear in the original.
+- Do NOT add emojis unless they already appear in the original.
+- Do NOT use em-dashes unless they already appear in the original.
+- Only improve clarity, word choice, and flow. Nothing else.
+- Return valid JSON only. No markdown. No code blocks. No extra text.
 """
-        result = (
+
+        text_raw = (
             gl.eq_principle.prompt_non_comparative(
-                lambda: prompt,
-                task="Analyze tweet performance and return structured JSON",
-                criteria="Return valid JSON only with all required fields"
+                lambda: generation_prompt,
+                task="Generate tweet improvements and validator opinions",
+                criteria="Return valid JSON with improved_tweet as a string and variants as an array of 3 objects each with type, description, and tweet fields."
             )
             .replace("```json", "")
             .replace("```", "")
             .strip()
         )
 
-        # Use provided user_address if given (for sponsored transactions), otherwise use sender
+        # ── Merge both phases into one result object ──
+        scores_data = json.loads(scores_raw)
+        text_data = json.loads(text_raw)
+
+        merged = {
+            "virality_score": scores_data.get("virality_score", 0),
+            "backlash_risk": scores_data.get("backlash_risk", 0),
+            "consensus_disagreement": scores_data.get("consensus_disagreement", 0),
+            "summary": scores_data.get("summary", ""),
+            "audience_breakdown": scores_data.get("audience_breakdown", {
+                "agree": "0%", "attack": "0%", "ignore": "0%"
+            }),
+            "reasoning_points": scores_data.get("reasoning_points", []),
+            "validator_opinions": text_data.get("validator_opinions", []),
+            "improved_tweet": text_data.get("improved_tweet", ""),
+            "variants": text_data.get("variants", []),
+        }
+
+        # ── Determine target user ──
         target_user = Address(user_address) if user_address else gl.message.sender_address
 
-        existing = "[]"
-        if target_user in self.user_histories:
-            existing = self.user_histories[target_user]
+        # ── Flat O(1) write ──
+        count = int(self.analysis_count[target_user]) if target_user in self.analysis_count else 0
+        key = f"{str(target_user)}:{count}"
 
-        history = json.loads(existing)
-        history.append({
-            "id": str(len(history)),
+        record = {
+            "id": str(count),
             "tweet": tweet,
-            "data": json.loads(result)
-        })
+            "timestamp": "",  # timestamp not available in contract; set on frontend
+            "data": merged
+        }
 
-        updated = json.dumps(history)
-        self.user_histories[target_user] = updated
-        return updated
+        self.analysis_data[key] = json.dumps(record)
+        self.analysis_count[target_user] = u256(count + 1)
 
-    @gl.public.view
-    def get_history(self, user: str) -> str:
-        addr = Address(user)
-        if addr in self.user_histories:
-            return self.user_histories[addr]
-        return "[]"
+        return json.dumps(record)
 
     @gl.public.view
     def get_history_count(self, user: str) -> str:
         addr = Address(user)
-        if addr in self.user_histories:
-            history = json.loads(self.user_histories[addr])
-            return str(len(history))
+        if addr in self.analysis_count:
+            return str(int(self.analysis_count[addr]))
         return "0"
 
     @gl.public.view
     def get_analysis_at(self, user: str, index: str) -> str:
-        addr = Address(user)
-        idx = int(index)
-        if addr in self.user_histories:
-            history = json.loads(self.user_histories[addr])
-            if idx < len(history):
-                return json.dumps(history[idx])
+        key = f"{user}:{index}"
+        if key in self.analysis_data:
+            return self.analysis_data[key]
         return ""
+
+    @gl.public.view
+    def get_latest_analysis(self, user: str) -> str:
+        addr = Address(user)
+        if addr not in self.analysis_count:
+            return ""
+        count = int(self.analysis_count[addr])
+        if count == 0:
+            return ""
+        key = f"{user}:{count - 1}"
+        if key in self.analysis_data:
+            return self.analysis_data[key]
+        return ""
+
+    @gl.public.view
+    def get_history(self, user: str) -> str:
+        """Returns full history as a JSON array. Use sparingly for large histories."""
+        addr = Address(user)
+        if addr not in self.analysis_count:
+            return "[]"
+        count = int(self.analysis_count[addr])
+        if count == 0:
+            return "[]"
+        history = []
+        for i in range(count):
+            key = f"{user}:{i}"
+            if key in self.analysis_data:
+                history.append(json.loads(self.analysis_data[key]))
+        return json.dumps(history)

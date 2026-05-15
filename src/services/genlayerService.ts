@@ -1,24 +1,7 @@
 import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
 import { TransactionStatus } from "genlayer-js/types";
 import { testnetBradbury } from "genlayer-js/chains";
-
-export type AnalysisResult = {
-  id: string;
-  originalTweet: string;
-  timestamp: string;
-  viralityScore: number;
-  backlashRisk: number;
-  consensusDisagreement: number;
-  audienceBreakdown: {
-    agree: string;
-    attack: string;
-    ignore: string;
-  };
-  reasoningPoints: string[];
-  validatorOpinions: { name: string; opinion: string; detail: string }[];
-  improvedTweet: string;
-  variants: { type: string; description: string; tweet: string }[];
-};
+import type { AnalysisResult } from "../types";
 
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
 console.log("Contract:", CONTRACT_ADDRESS);
@@ -59,7 +42,7 @@ export async function analyzeTweetWithConsensus(
   }
 
   try {
-    // Call backend to submit sponsored transaction
+    // Submit sponsored transaction via backend
     console.log("Submitting to backend:", API_URL);
     const submitResponse = await fetch(`${API_URL}/api/analyze`, {
       method: "POST",
@@ -75,7 +58,7 @@ export async function analyzeTweetWithConsensus(
     const { hash } = await submitResponse.json();
     console.log("Transaction hash:", hash);
 
-    // Use the built-in SDK method instead of manual polling
+    // Wait for transaction to be accepted
     const receipt = await client.waitForTransactionReceipt({
       hash: hash,
       status: TransactionStatus.ACCEPTED,
@@ -85,19 +68,11 @@ export async function analyzeTweetWithConsensus(
 
     console.log("Transaction receipt:", receipt);
 
-    // Now read the result directly
-    const newCount = await client.readContract({
-      address: CONTRACT_ADDRESS,
-      functionName: "get_history_count",
-      args: [USER_ADDRESS],
-    });
-
-    const lastIndex = Number(newCount) - 1;
-
+    // Single read call — get_latest_analysis replaces the previous double round trip
     const jsonResult = await client.readContract({
       address: CONTRACT_ADDRESS,
-      functionName: "get_analysis_at",
-      args: [USER_ADDRESS, String(lastIndex)],
+      functionName: "get_latest_analysis",
+      args: [USER_ADDRESS],
     });
 
     if (!jsonResult) {
@@ -125,28 +100,33 @@ export async function getAnalysisHistory(): Promise<AnalysisResult[]> {
     const total = rawCount != null ? Number(rawCount) : 0;
     if (total === 0) return [];
 
-    const history: AnalysisResult[] = [];
     const limit = Math.min(total, 10);
 
-    for (let i = total - 1; i >= Math.max(0, total - limit); i--) {
-      try {
-        const jsonResult = await client.readContract({
-          address: CONTRACT_ADDRESS,
-          functionName: "get_analysis_at",
-          args: [USER_ADDRESS, String(i)],
-        });
-        if (jsonResult) {
-          const rawData = JSON.parse(jsonResult as string);
-          history.push(
-            transformToAnalysisResult(rawData, rawData.tweet || "")
-          );
-        }
-      } catch (e) {
-        console.error(`Failed to fetch history at index ${i}`, e);
-      }
-    }
+    // Build array of indices to fetch (most recent first)
+    const indices = Array.from({ length: limit }, (_, k) => total - 1 - k);
 
-    return history;
+    // Fetch all in parallel instead of sequentially
+    const results = await Promise.all(
+      indices.map((i) =>
+        client
+          .readContract({
+            address: CONTRACT_ADDRESS,
+            functionName: "get_analysis_at",
+            args: [USER_ADDRESS, String(i)],
+          })
+          .catch((e) => {
+            console.error(`Failed to fetch history at index ${i}`, e);
+            return null;
+          })
+      )
+    );
+
+    return results
+      .filter(Boolean)
+      .map((r) => {
+        const rawData = JSON.parse(r as string);
+        return transformToAnalysisResult(rawData, rawData.tweet || "");
+      });
   } catch (e) {
     console.error("Failed to fetch history:", e);
     return [];
